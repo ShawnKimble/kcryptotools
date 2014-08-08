@@ -20,9 +20,26 @@ class PeerSocketsHandler(object):
     def __init__(self):
         self.peer_memdb=peerdb.PeerMemDB()
         self.tx_memdb=peerdb.TxMemDB()
+
+        self.my_ip=self._get_my_ip()
         self.poller =select.poll()
         self.fileno_to_peer_dict={}
         self.tx_dict={} #dict of transcations, key = hash , value=tuple(timestamp first recieved,address)
+    
+    def __del__(self):
+        self.peer_memdb.dump_to_disk()
+        self.tx_memdb.dump_to_disk()
+
+    # function to get my current ip, 
+    def _get_my_ip(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("gmail.com",80))
+        out= s.getsockname()[0]
+        s.close()
+        #for connecting to bitcoind on same machine
+        #out= socket.gethostbyname(socket.gethostname())
+        return out
+
     #create new peer socket at address
     def create_peer_socket(self,address):
         try:
@@ -30,11 +47,11 @@ class PeerSocketsHandler(object):
             peer.connect(address)
             print("establishing connection to:",address)
         except IOError as e:
-            print "I/O error({0}): {1}".format(e.errno, e.strerror)
+            print ("I/O error({0}): {1}".format(e.errno, e.strerror))
             print("could not connect to:",address)
             return False  
         self.fileno_to_peer_dict[peer.get_socket().fileno()]=peer 
-        self.peer_memdb.add_initialized_address(address,time.time())
+        self.peer_memdb.add_initialized_address(address)
         eventmask=select.POLLIN|select.POLLPRI|select.POLLOUT|select.POLLERR|select.POLLHUP|select.POLLNVAL
         self.poller.register( peer.get_socket().fileno(),eventmask)
         return True 
@@ -44,11 +61,15 @@ class PeerSocketsHandler(object):
         fileno=peer.get_socket().fileno()
         address=peer.get_address()
         self.poller.unregister(fileno)
-        self.peer_memdb.add_closed_address(address,time.time())
+        self.peer_memdb.add_closed_address(address)
         del self.fileno_to_peer_dict[fileno]
    
     def get_num_active_peers(self):
         return len(self.fileno_to_peer_dict)
+
+    # brodcast transactions to all connected peers
+    def broadcast(self,tx):
+        return 
 
     # poll peer sockets and do stuff if there is data
     def run(self): 
@@ -59,36 +80,42 @@ class PeerSocketsHandler(object):
             current_peer=self.fileno_to_peer_dict[fileno]
             if(poll_result & select.POLLOUT): #ready for write (means socket is connected)
                 print(fileno," ready to write")
-                self.peer_memdb.add_opened_address(current_peer.get_address(),time.time())
+                self.peer_memdb.add_opened_address(current_peer.get_address())
                 #don't check for POLLOUT anymore, since we know it is connected 
                 self.poller.modify(fileno,
                     select.POLLIN|select.POLLPRI|select.POLLERR|select.POLLHUP|select.POLLNVAL) 
                 if not current_peer.get_is_active():
                     print("connection established to",current_peer.address)
-                    current_peer.send_version()
+                    current_peer.send_version(self.my_ip)
                     current_peer.set_is_active(True)
                     print("Sent version")
                     print("active peers:",self.get_num_active_peers())
             if(poll_result & select.POLLIN):#ready for read( packet is available)
                 current_peer.recv()
-                #check new addresses and try to connect 
+            
+               #check new addresses and try to connect 
                 while len(current_peer.peer_address_list) > 0 :
                     address=current_peer.peer_address_list.pop()
                     if( self.peer_memdb.is_closed(address)):
                         self.create_peer_socket(address)
                     else:
-                        print "found already connected peer"
+                        print("found already connected peer")
+                #check new tx and add to db 
                 while len(current_peer.tx_hash_list) > 0 :
                     tx_hash=current_peer.tx_hash_list.pop()
-                    self.tx_memdb.add(current_peer.get_address(),tx_hash,time.time())
+                    self.tx_memdb.add(current_peer.get_address(),tx_hash)
             if(poll_result & select.POLLPRI): #urgent data to read
                 print("URGENT READ")
 
             if(poll_result & select.POLLERR): #Error condition
                 print("ERROR CONDITION on %d"%(fileno))
+
             if(poll_result & select.POLLHUP): #hung up
                 print("HUNG UP detected on %d"%(fileno))
+                print('valid bytes:', current_peer.total_valid_bytes_received,
+                    'junk bytes:',current_peer.total_junk_bytes_received)            
                 self.remove_peer_socket(current_peer)
+
             if(poll_result & select.POLLNVAL): #invalid request, unopen descriptor
                 print("INVALID REQUEST")
                 self.remove_peer_socket(current_peer)
@@ -102,6 +129,9 @@ class PeerSocket(object):
         self.tx_hash_list=[]
         self.recv_buffer=''
         self.expected_msg_size=0
+        self.version=''
+        self.total_valid_bytes_received=0 
+        self.total_junk_bytes_received=0
 
     def __del__(self):
         self.my_socket.close()
@@ -144,20 +174,22 @@ class PeerSocket(object):
             #if valid command is not contained, packet will be thrown out 
             if check_if_valid_command(self.recv_buffer)==False:
                 print('Invalid command:',get_command_msgheader(self.recv_buffer))
+                self.total_junk_bytes_received+=len(self.recv_buffer)
                 self.expected_msg_size=0
                 self.recv_buffer=''
                 return '' 
         try:
             self.recv_buffer+=self.my_socket.recv(TCP_RECV_PACKET_SIZE)
         except IOError as e:
-            print "I/O error({0}): {1}".format(e.errno, e.strerror)
+            print("I/O error({0}): {1}".format(e.errno, e.strerror))
             return ''  
 
         #if entire message is assembled exactly, return it
         if(len(self.recv_buffer) >= self.expected_msg_size and self.expected_msg_size !=0):
+            self.total_valid_bytes_received+=self.expected_msg_size
             out=self.recv_buffer[0:self.expected_msg_size]
             self.recv_buffer=self.recv_buffer[self.expected_msg_size:]
-            self.expected_msg_size=0
+            self.expected_msg_size=0            
             return out 
             
         #otherwise output is not ready, return empty string
@@ -177,9 +209,9 @@ class PeerSocket(object):
         
         return process_pong(data)
 
-    def send_version(self):
+    def send_version(self,my_ip):
         data = struct.pack ('<IQQ', VERSION, 1, int(time.time()))
-        data += pack_net_addr ((1, (self._get_my_ip(), 8333)))
+        data += pack_net_addr ((1, (my_ip, 8333)))
         data += pack_net_addr ((1, (self.address, 8333)))
         data += struct.pack ('<Q',NONCE)
         data += pack_var_str ('/caesure:20130306/')
@@ -199,7 +231,7 @@ class PeerSocket(object):
         try:
             self.my_socket.send (packet)
         except IOError as e:
-            print("Send failed") 
+            print("Send packet I/O error({0}): {1}".format(e.errno, e.strerror))
             return False
         return True
 
@@ -217,8 +249,14 @@ class PeerSocket(object):
             return True
         else:
             return False
+
+    def broadcast(self,tx):
+        pass
+        # send inv  (num tx,inventory vector ( MSG_TX,hash) ) 
+        # receive getdata (make sure we have hash) 
+        # send tx 
+            
     def process_data(self,data):
-        print(get_command_msgheader(data))
         if compare_command(data,"getaddr"): #get known peers
             pass
         elif compare_command(data,"addr"):#in reponse to getaddr
@@ -249,20 +287,11 @@ class PeerSocket(object):
             pass
         else:
             print("unhandled command recieved:",get_command_msgheader(data))
-   #get my current IP 
-    def _get_my_ip(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("gmail.com",80))
-        out= s.getsockname()[0]
-        s.close()
-        #for connecting to bitcoind on same machine
-        #out= socket.gethostbyname(socket.gethostname())
-        return out
+
     def _process_addr(self,data):
         payload =get_payload(data)
         varint_tuple=read_varint(payload)
         num_ips=varint_tuple[0]
-        print("num_ips:",varint_tuple)
         varint_size=varint_tuple[1]
         ip_data=payload[varint_size:] 
         for i in range(0,num_ips):
@@ -301,8 +330,6 @@ class PeerSocket(object):
     def _process_inv_block(self,inv_hash):
         pass
 
-def hex_print(string):
-    print ":".join("{0:x}".format(ord(c)) for c in string)
 
 def dhash (s):
     return sha256(sha256(s).digest()).digest()
@@ -407,12 +434,15 @@ def process_version_handshake(socket):
         print("message type:",out_tuple[1:])
 
 
+# resolve seeds 
 dnsseeds=['dnsseed.bluematt.me','bitseed.xf2.org','seed.bitcoin.sipa.be','dnsseed.bitcoin.dashjr.org']
-
 address_list=[]
 for seed in dnsseeds:
-    cur_address=socket.gethostbyname(seed)
-    address_list.append(cur_address)
+    try:
+        cur_address=socket.gethostbyname(seed)
+        address_list.append(cur_address)
+    except:
+        print("failed to resolve {}".format(seed)  
 
 handler=PeerSocketsHandler()
 for address in address_list:
