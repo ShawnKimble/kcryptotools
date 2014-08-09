@@ -9,10 +9,10 @@ VERSION=70001
 BITCOIN_MAGIC = '\xf9\xbe\xb4\xd9'
 NONCE = 1 
 SOCKET_BLOCK_SECONDS=0 #None means blocking calls, 0 means non blocking calls
-BITCOIN_PORT=8333
+PORT=8333
 TCP_RECV_PACKET_SIZE=4096
 MSGHEADER_SIZE=24
-
+DNS_SEEDS=['dnsseed.bluematt.me','bitseed.xf2.org','seed.bitcoin.sipa.be','dnsseed.bitcoin.dashjr.org']
 
 # Handle multiple peer sockets
 class PeerSocketsHandler(object):
@@ -126,7 +126,8 @@ class PeerSocket(object):
         self.is_active=False
         self.address=''
         self.peer_address_list=[]
-        self.tx_hash_list=[]
+        self.tx_hash_list=[] #list of received tx hashes
+        self.broadcast_tx_dict={} #dictionary where key is hash of tx we want to broadcast and value is tx 
         self.recv_buffer=''
         self.expected_msg_size=0
         self.version=''
@@ -154,9 +155,9 @@ class PeerSocket(object):
         self.my_socket.settimeout(SOCKET_BLOCK_SECONDS)
         try:
             if(socket_type==socket.AF_INET): 
-                self.my_socket.connect((address,BITCOIN_PORT)) 
+                self.my_socket.connect((address,PORT)) 
             else:
-                self.my_socket.connect((address,BITCOIN_PORT,0,0))
+                self.my_socket.connect((address,PORT,0,0))
         except IOError as e:
             # 115 == Operation now in progress EINPROGRESS, this is expected
             if e.errno !=115: 
@@ -235,12 +236,21 @@ class PeerSocket(object):
             return False
         return True
 
+    # unused
     def send_getaddr(self):
         self.send_getaddr_packet(self.my_socket)  
- 
+
+    # unused
     def send_getaddr_packet(conn):
         data = struct.pack('0c')
         self._send_packet('getaddr',data)   
+
+    def _send_tx(self,tx_hash):
+        # send only if we have tx_hash 
+        if tx_hash in self.broadcast_tx_dict:
+            data=self.broadcast_tx_dict[tx_hash]
+            self._send_packet('tx',data)
+       
 
     def recv(self):
         data=self.get_packet()
@@ -251,10 +261,14 @@ class PeerSocket(object):
             return False
 
     def broadcast(self,tx):
-        pass
-        # send inv  (num tx,inventory vector ( MSG_TX,hash) ) 
-        # receive getdata (make sure we have hash) 
-        # send tx 
+        tx_hash=dhash(tx) #need to hash here
+        self.broadcast_tx_dict[tx_hash]=tx
+        data =  pack_var_int(1) 
+        data += struct.pack('<I32s',1,tx_hash) #MSG_TX
+
+        self._send_packet('inv',data)
+        # we will receive getdata (make sure we have hash) 
+        # and process_ata will send_tx
             
     def process_data(self,data):
         if compare_command(data,"getaddr"): #get known peers
@@ -273,8 +287,8 @@ class PeerSocket(object):
             pass
         elif compare_command(data,"headers"):#return header in reponse to getheader
             pass
-        elif compare_command(data,"getdata"):#get data from peer after recieving inv
-            pass 
+        elif compare_command(data,"getdata"):#get data from peer after broadcasting tx via inv
+            self._process_get_data(data)  
         elif compare_command(data,"notfound"):#not found is sent after getdata recieved
             pass
         elif compare_command(data,"block"):#describe a block in reponse to getdata
@@ -288,12 +302,32 @@ class PeerSocket(object):
         else:
             print("unhandled command recieved:",get_command_msgheader(data))
 
+    def _process_get_data(self,data):
+        payload         =   get_payload(data)
+        varint_tuple    =   read_varint(payload)
+        num_invs        =   varint_tuple[0]
+        varint_size     =   varint_tuple[1]
+        inv_data        =   payload[varint_size:]         
+        for i in range(0,num_invs):
+            begin_index=i*36
+            end_index=begin_index+36
+            inv_type = struct.unpack('<I',inv_data[begin_index:begin_index+4])[0]
+            inv_hash = struct.unpack('32c',inv_data[begin_index+4:begin_index+36])
+            if(inv_type ==0):#error
+                pass
+            elif(inv_type==1):#tx
+                self._send_tx(inv_hash)
+            elif(inv_type==2):#block
+                pass 
+            else:
+                print("unknown inv")
+
     def _process_addr(self,data):
-        payload =get_payload(data)
-        varint_tuple=read_varint(payload)
-        num_ips=varint_tuple[0]
-        varint_size=varint_tuple[1]
-        ip_data=payload[varint_size:] 
+        payload         =   get_payload(data)
+        varint_tuple    =   read_varint(payload)
+        num_ips         =   varint_tuple[0]
+        varint_size     =   varint_tuple[1]
+        ip_data         =   payload[varint_size:] 
         for i in range(0,num_ips):
             begin_index=i*30
             end_index=begin_index+30
@@ -433,22 +467,23 @@ def process_version_handshake(socket):
     else: 
         print("message type:",out_tuple[1:])
 
+def main():
+    # resolve seeds 
+    address_list=[]
+    for seed in DNS_SEEDS:
+        try:
+            cur_address=socket.gethostbyname(seed)
+            address_list.append(cur_address)
+        except:
+            print("failed to resolve {}".format(seed)  
 
-# resolve seeds 
-dnsseeds=['dnsseed.bluematt.me','bitseed.xf2.org','seed.bitcoin.sipa.be','dnsseed.bitcoin.dashjr.org']
-address_list=[]
-for seed in dnsseeds:
-    try:
-        cur_address=socket.gethostbyname(seed)
-        address_list.append(cur_address)
-    except:
-        print("failed to resolve {}".format(seed)  
+    handler=PeerSocketsHandler()
+    for address in address_list:
+        handler.create_peer_socket(address)
 
-handler=PeerSocketsHandler()
-for address in address_list:
-    handler.create_peer_socket(address)
-
-while 1:
-    handler.run()
+    while 1:
+        handler.run()
 
 
+if __name__ == "__main__":
+    main()
