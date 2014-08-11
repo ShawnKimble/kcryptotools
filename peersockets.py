@@ -13,19 +13,22 @@ PORT=8333
 TCP_RECV_PACKET_SIZE=4096
 MSGHEADER_SIZE=24
 DNS_SEEDS=['dnsseed.bluematt.me','bitseed.xf2.org','seed.bitcoin.sipa.be','dnsseed.bitcoin.dashjr.org']
+USER_AGENT='/BTCONNECT:0001/'#BIP 14
 
 # Handle multiple peer sockets
 class PeerSocketsHandler(object):
-
-    def __init__(self):
+    
+    # tx_broadcast_list is a list of transactions in hex string (i.e, '03afb8..')
+    def __init__(self,tx_broadcast_list=[]):
         self.peer_memdb=peerdb.PeerMemDB()
         self.tx_memdb=peerdb.TxMemDB()
 
         self.my_ip=self._get_my_ip()
         self.poller =select.poll()
         self.fileno_to_peer_dict={}
-        self.tx_dict={} #dict of transcations, key = hash , value=tuple(timestamp first recieved,address)
-    
+        self.tx_dict={} #dict of received transcations, key = hash , value=tuple(timestamp first recieved,address)
+        self.tx_broadcast_list=tx_broadcast_list #list of tx to broadcast          
+
     def __del__(self):
         self.peer_memdb.dump_to_disk()
         self.tx_memdb.dump_to_disk()
@@ -67,9 +70,6 @@ class PeerSocketsHandler(object):
     def get_num_active_peers(self):
         return len(self.fileno_to_peer_dict)
 
-    # brodcast transactions to all connected peers
-    def broadcast(self,tx):
-        return 
 
     # poll peer sockets and do stuff if there is data
     def run(self): 
@@ -84,16 +84,23 @@ class PeerSocketsHandler(object):
                 #don't check for POLLOUT anymore, since we know it is connected 
                 self.poller.modify(fileno,
                     select.POLLIN|select.POLLPRI|select.POLLERR|select.POLLHUP|select.POLLNVAL) 
+                # initialize by sending version 
                 if not current_peer.get_is_active():
                     print("connection established to",current_peer.address)
                     current_peer.send_version(self.my_ip)
                     current_peer.set_is_active(True)
                     print("Sent version")
                     print("active peers:",self.get_num_active_peers())
+                # broadcast tx 
+                for tx in self.tx_broadcast_list:
+                    was_broadcast=current_peer.broadcast(tx)# this will not broadcast more than once
+                    if was_broadcast:
+                        print("Tx has been broadcast: {}".format(tx))
+
             if(poll_result & select.POLLIN):#ready for read( packet is available)
                 current_peer.recv()
             
-               #check new addresses and try to connect 
+                #check new addresses we got from the peer and try to connect 
                 while len(current_peer.peer_address_list) > 0 :
                     address=current_peer.peer_address_list.pop()
                     if( self.peer_memdb.is_closed(address)):
@@ -104,18 +111,16 @@ class PeerSocketsHandler(object):
                 while len(current_peer.tx_hash_list) > 0 :
                     tx_hash=current_peer.tx_hash_list.pop()
                     self.tx_memdb.add(current_peer.get_address(),tx_hash)
+
             if(poll_result & select.POLLPRI): #urgent data to read
                 print("URGENT READ")
-
             if(poll_result & select.POLLERR): #Error condition
                 print("ERROR CONDITION on %d"%(fileno))
-
             if(poll_result & select.POLLHUP): #hung up
                 print("HUNG UP detected on %d"%(fileno))
                 print('valid bytes:', current_peer.total_valid_bytes_received,
                     'junk bytes:',current_peer.total_junk_bytes_received)            
                 self.remove_peer_socket(current_peer)
-
             if(poll_result & select.POLLNVAL): #invalid request, unopen descriptor
                 print("INVALID REQUEST")
                 self.remove_peer_socket(current_peer)
@@ -127,7 +132,9 @@ class PeerSocket(object):
         self.address=''
         self.peer_address_list=[]
         self.tx_hash_list=[] #list of received tx hashes
-        self.broadcast_tx_dict={} #dictionary where key is hash of tx we want to broadcast and value is tx 
+        #dictionary where key is hash of tx we want to broadcast and value is tx
+        #only contains tx's that have been broacast already using broadcast() function 
+        self.broadcast_tx_dict={} 
         self.recv_buffer=''
         self.expected_msg_size=0
         self.version=''
@@ -196,14 +203,12 @@ class PeerSocket(object):
         #otherwise output is not ready, return empty string
         else:
             return '' 
- 
-          
+           
     def get_is_active(self):
         return self.is_active 
 
     #send a ping pong to verify connection
     def verify_connection(self):
-
         data = struct.pack('<Q',NONCE)
         self._send_packet('ping',data)
         data=self.my_socket.recv(1024)
@@ -212,10 +217,10 @@ class PeerSocket(object):
 
     def send_version(self,my_ip):
         data = struct.pack ('<IQQ', VERSION, 1, int(time.time()))
-        data += pack_net_addr ((1, (my_ip, 8333)))
-        data += pack_net_addr ((1, (self.address, 8333)))
+        data += pack_net_addr ((1, (my_ip, PORT)))
+        data += pack_net_addr ((1, (self.address, PORT)))
         data += struct.pack ('<Q',NONCE)
-        data += pack_var_str ('/caesure:20130306/')
+        data += pack_var_str (USER_AGENT)
         start_height = 0
         #ignore bip37 for now - leave True
         data += struct.pack ('<IB', start_height, 1)
@@ -248,10 +253,11 @@ class PeerSocket(object):
     def _send_tx(self,tx_hash):
         # send only if we have tx_hash 
         if tx_hash in self.broadcast_tx_dict:
+
+            print("send_tx initialized")
             data=self.broadcast_tx_dict[tx_hash]
             self._send_packet('tx',data)
        
-
     def recv(self):
         data=self.get_packet()
         if(len(data)!=0):
@@ -260,16 +266,22 @@ class PeerSocket(object):
         else:
             return False
 
+    # return True, if we broadcast, False if already has been
+    # broadcast. tx is expected to be a hex string, i.e. '02aba8...'
     def broadcast(self,tx):
+        tx=tx.decode('hex')
         tx_hash=dhash(tx) #need to hash here
-        self.broadcast_tx_dict[tx_hash]=tx
-        data =  pack_var_int(1) 
-        data += struct.pack('<I32s',1,tx_hash) #MSG_TX
+        # we only broadcast if tx is new 
+        if tx_hash not in self.broadcast_tx_dict:
+            self.broadcast_tx_dict[tx_hash]=tx
+            data =  pack_var_int(1) 
+            data += struct.pack('<I32s',1,tx_hash) #MSG_TX
+            self._send_packet('inv',data)
+            return True
+            # we will receive getdata (make sure we have hash) 
+            # and process_ata will send_tx
+        return False
 
-        self._send_packet('inv',data)
-        # we will receive getdata (make sure we have hash) 
-        # and process_ata will send_tx
-            
     def process_data(self,data):
         if compare_command(data,"getaddr"): #get known peers
             pass
@@ -316,7 +328,11 @@ class PeerSocket(object):
             if(inv_type ==0):#error
                 pass
             elif(inv_type==1):#tx
-                self._send_tx(inv_hash)
+                tx_hash=''.join(inv_hash) #convert tuple to string
+                print("type inv_hash",type(inv_hash))
+                print("type tx_hash",type(tx_hash))
+                print("getdata received for tx hash:{}".format(tx_hash))
+                self._send_tx(tx_hash)
             elif(inv_type==2):#block
                 pass 
             else:
@@ -446,7 +462,6 @@ def get_payload(data):
     return data[24:] 
 
 #########################################
-
 def process_pong(data):
     if(compare_command(data,"pong")):
         return True
@@ -467,23 +482,4 @@ def process_version_handshake(socket):
     else: 
         print("message type:",out_tuple[1:])
 
-def main():
-    # resolve seeds 
-    address_list=[]
-    for seed in DNS_SEEDS:
-        try:
-            cur_address=socket.gethostbyname(seed)
-            address_list.append(cur_address)
-        except:
-            print("failed to resolve {}".format(seed)  
 
-    handler=PeerSocketsHandler()
-    for address in address_list:
-        handler.create_peer_socket(address)
-
-    while 1:
-        handler.run()
-
-
-if __name__ == "__main__":
-    main()
