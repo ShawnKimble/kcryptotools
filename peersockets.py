@@ -18,7 +18,8 @@ USER_AGENT='/BTCONNECT:0001/'#BIP 14
 # Handle multiple peer sockets
 class PeerSocketsHandler(object):
     
-    # tx_broadcast_list is a list of transactions in hex string (i.e, '03afb8..')
+    # tx_broadcast_list is a list of transactions to be broadcast 
+    # in hex string (i.e, '03afb8..')
     def __init__(self,tx_broadcast_list=[]):
         self.peer_memdb=peerdb.PeerMemDB()
         self.tx_memdb=peerdb.TxMemDB()
@@ -215,17 +216,6 @@ class PeerSocket(object):
         
         return process_pong(data)
 
-    def send_version(self,my_ip):
-        data = struct.pack ('<IQQ', VERSION, 1, int(time.time()))
-        data += pack_net_addr ((1, (my_ip, PORT)))
-        data += pack_net_addr ((1, (self.address, PORT)))
-        data += struct.pack ('<Q',NONCE)
-        data += pack_var_str (USER_AGENT)
-        start_height = 0
-        #ignore bip37 for now - leave True
-        data += struct.pack ('<IB', start_height, 1)
-        self._send_packet ('version', data)
-
     def _send_packet(self,command, payload):
         lc = len(command)
         assert (lc < 12)
@@ -241,14 +231,22 @@ class PeerSocket(object):
             return False
         return True
 
-    # unused
-    def send_getaddr(self):
-        self.send_getaddr_packet(self.my_socket)  
+    def send_version(self,my_ip):
+        data = struct.pack ('<IQQ', VERSION, 1, int(time.time()))
+        data += pack_net_addr ((1, (my_ip, PORT)))
+        data += pack_net_addr ((1, (self.address, PORT)))
+        data += struct.pack ('<Q',NONCE)
+        data += pack_var_str (USER_AGENT)
+        start_height = 0
+        #ignore bip37 for now - leave True
+        data += struct.pack ('<IB', start_height, 1)
+        self._send_packet ('version', data)
 
     # unused
-    def send_getaddr_packet(conn):
+    def _send_getaddr(self):
         data = struct.pack('0c')
         self._send_packet('getaddr',data)   
+
 
     def _send_tx(self,tx_hash):
         # send only if we have tx_hash 
@@ -266,8 +264,10 @@ class PeerSocket(object):
         else:
             return False
 
-    # return True, if we broadcast, False if already has been
-    # broadcast. tx is expected to be a hex string, i.e. '02aba8...'
+    # Return True, if broadcast succeeds, False oterwise.  
+    # Unique tx can only be broadcast once, attempts to broadcast
+    # identical tx will return False. 
+    # tx is expected to be a hex string, i.e. '02aba8...'
     def broadcast(self,tx):
         tx=tx.decode('hex')
         tx_hash=dhash(tx) #need to hash here
@@ -279,7 +279,8 @@ class PeerSocket(object):
             self._send_packet('inv',data)
             return True
             # we will receive getdata (make sure we have hash) 
-            # and process_ata will send_tx
+            # and process_data will call _send_tx when inv message 
+            # received 
         return False
 
     def process_data(self,data):
