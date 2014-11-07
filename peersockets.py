@@ -1,26 +1,27 @@
+import cryptoconfig
+import peerdb
+
 import struct 
 import socket
 import select
 import time
 from hashlib import sha256
-import peerdb
 
-VERSION=70001
-BITCOIN_MAGIC = '\xf9\xbe\xb4\xd9'
+MSGHEADER_SIZE=24
+USER_AGENT='/BTCONNECT:0001/' #BIP 14
+TCP_RECV_PACKET_SIZE=4096
 NONCE = 1 
 SOCKET_BLOCK_SECONDS=0 #None means blocking calls, 0 means non blocking calls
-PORT=8333
-TCP_RECV_PACKET_SIZE=4096
-MSGHEADER_SIZE=24
-DNS_SEEDS=['dnsseed.bluematt.me','bitseed.xf2.org','seed.bitcoin.sipa.be','dnsseed.bitcoin.dashjr.org']
-USER_AGENT='/BTCONNECT:0001/'#BIP 14
+
 
 # Handle multiple peer sockets
 class PeerSocketsHandler(object):
     
     # tx_broadcast_list is a list of transactions to be broadcast 
     # in hex string (i.e, '03afb8..')
-    def __init__(self,tx_broadcast_list=[]):
+    def __init__(self,tx_broadcast_list=[],crypto='bitcoin'):
+        self.crypto=crypto
+
         self.peer_memdb=peerdb.PeerMemDB()
         self.tx_memdb=peerdb.TxMemDB()
 
@@ -46,8 +47,16 @@ class PeerSocketsHandler(object):
 
     #create new peer socket at address
     def create_peer_socket(self,address):
+
+        # check if address is domain name and convert it to TCP IP address
+        if any([ c.isalpha() for c in address]):
+            try:
+                address=socket.gethostbyname(address)         
+            except Exception as e:
+                print("failed to resolved address "+address)
+                return False 
         try:
-            peer=PeerSocket()
+            peer=PeerSocket(self.crypto)
             peer.connect(address)
             print("establishing connection to:",address)
         except IOError as e:
@@ -128,7 +137,12 @@ class PeerSocketsHandler(object):
 
 class PeerSocket(object):
     
-    def __init__(self):
+    def __init__(self,crypto):
+        self.crypto=crypto 
+        self.port = cryptoconfig.PORT[crypto] 
+        self.protocol_version=cryptoconfig.PROTOCOL_VERSION[crypto]
+        self.msg_magic_bytes=cryptoconfig.MSG_MAGIC_BYTES[crypto]
+
         self.is_active=False
         self.address=''
         self.peer_address_list=[]
@@ -163,9 +177,9 @@ class PeerSocket(object):
         self.my_socket.settimeout(SOCKET_BLOCK_SECONDS)
         try:
             if(socket_type==socket.AF_INET): 
-                self.my_socket.connect((address,PORT)) 
+                self.my_socket.connect((address,self.port)) 
             else:
-                self.my_socket.connect((address,PORT,0,0))
+                self.my_socket.connect((address,self.port,0,0))
         except IOError as e:
             # 115 == Operation now in progress EINPROGRESS, this is expected
             if e.errno !=115: 
@@ -223,7 +237,7 @@ class PeerSocket(object):
         h = dhash (payload)
         checksum, = struct.unpack ('<I', h[:4])
         packet = struct.pack ('<4s12sII',
-            BITCOIN_MAGIC,cmd,len(payload),checksum) + payload
+            self.msg_magic_bytes,cmd,len(payload),checksum) + payload
         try:
             self.my_socket.send (packet)
         except IOError as e:
@@ -232,9 +246,9 @@ class PeerSocket(object):
         return True
 
     def send_version(self,my_ip):
-        data = struct.pack ('<IQQ', VERSION, 1, int(time.time()))
-        data += pack_net_addr ((1, (my_ip, PORT)))
-        data += pack_net_addr ((1, (self.address, PORT)))
+        data = struct.pack ('<IQQ', self.protocol_version, 1, int(time.time()))
+        data += pack_net_addr ((1, (my_ip, self.port)))
+        data += pack_net_addr ((1, (self.address, self.port)))
         data += struct.pack ('<Q',NONCE)
         data += pack_var_str (USER_AGENT)
         start_height = 0
@@ -442,8 +456,7 @@ def compare_command(data, string):
     tuple_start=get_command_msgheader(data)
     for index,char in enumerate(string):
         if( tuple_start[index]!=char):
-            return False
-        
+            return False        
     return True
 
 
