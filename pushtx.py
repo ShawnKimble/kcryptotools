@@ -1,3 +1,5 @@
+# This can be used to push raw transaction (in hex) to a crypto network 
+#
 # USAGE:
 # python pushtx.py <crypto> <number of peers to send tx to> <transaction1 in hex> <transaction2 in hex> ...
 #
@@ -19,6 +21,7 @@ def pushtx(crypto,num_peers_to_send,tx_list):
         handler.run()
         if handler.get_num_active_peers() >= num_peers_to_send:
             return 
+
 def main():
 
     crypto              = sys.argv[1].lower()

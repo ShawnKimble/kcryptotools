@@ -11,8 +11,9 @@ from hashlib import sha256
 MSGHEADER_SIZE=24
 USER_AGENT='/BTCONNECT:0001/' #BIP 14
 TCP_RECV_PACKET_SIZE=4096
-NONCE = 1 
 SOCKET_BLOCK_SECONDS=0 #None means blocking calls, 0 means non blocking calls
+ADDRESS_TO_GET_IP='google.com' #connect to this address, in order to retreive computer IP
+NONCE = 1 
 
 # Handle multiple peer sockets
 class PeerSocketsHandler(object):
@@ -38,7 +39,7 @@ class PeerSocketsHandler(object):
     # function to get my current ip, 
     def _get_my_ip(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("gmail.com",80))
+        s.connect((ADDRESS_TO_GET_IP,80))
         out= s.getsockname()[0]
         s.close()
         #for connecting to bitcoind on same machine

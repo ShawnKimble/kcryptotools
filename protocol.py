@@ -1,3 +1,6 @@
+# Contains function to process bitcoin messages 
+# Some of the code her is taken from Caesure by Sam Rushing (https://github.com/samrushing/caesure)
+
 import socket
 import struct
 from hashlib import sha256
@@ -22,7 +25,6 @@ def get_command_msgheader(data):
 def get_magic_msgheader(data):
     return struct.unpack('<I',data[0:4])[0]
 
-#Function to process recieved messages #
 def get_length_msgheader(data):
     if(len(data)<20):
       raise Exception("data must be of length 20 at least, length is:%d"%len(data))
