@@ -1,3 +1,5 @@
+# Contains crypto specific parameters 
+
 
 SUPPORTED_CRYPTOS   = ['bitcoin','litecoin','dogecoin']
 PROTOCOL_VERSION    = {'bitcoin': 70001,'litecoin': 70002,'dogecoin':70003}
