@@ -1,3 +1,4 @@
+import protocol
 import cryptoconfig
 import peerdb
 
@@ -12,7 +13,6 @@ USER_AGENT='/BTCONNECT:0001/' #BIP 14
 TCP_RECV_PACKET_SIZE=4096
 NONCE = 1 
 SOCKET_BLOCK_SECONDS=0 #None means blocking calls, 0 means non blocking calls
-
 
 # Handle multiple peer sockets
 class PeerSocketsHandler(object):
@@ -192,11 +192,11 @@ class PeerSocket(object):
     def get_packet(self):
 
         if( len(self.recv_buffer) >= MSGHEADER_SIZE):
-            data_length=get_length_msgheader(self.recv_buffer)
+            data_length=protocol.get_length_msgheader(self.recv_buffer)
             self.expected_msg_size=data_length+MSGHEADER_SIZE
             #if valid command is not contained, packet will be thrown out 
-            if check_if_valid_command(self.recv_buffer)==False:
-                print('Invalid command:',get_command_msgheader(self.recv_buffer))
+            if protocol.is_valid_command(self.recv_buffer)==False:
+                print('Invalid command:',protocol.get_command_msgheader(self.recv_buffer))
                 self.total_junk_bytes_received+=len(self.recv_buffer)
                 self.expected_msg_size=0
                 self.recv_buffer=''
@@ -234,7 +234,7 @@ class PeerSocket(object):
         lc = len(command)
         assert (lc < 12)
         cmd = command + ('\x00' * (12 - lc))
-        h = dhash (payload)
+        h = protocol.dhash (payload)
         checksum, = struct.unpack ('<I', h[:4])
         packet = struct.pack ('<4s12sII',
             self.msg_magic_bytes,cmd,len(payload),checksum) + payload
@@ -247,10 +247,10 @@ class PeerSocket(object):
 
     def send_version(self,my_ip):
         data = struct.pack ('<IQQ', self.protocol_version, 1, int(time.time()))
-        data += pack_net_addr ((1, (my_ip, self.port)))
-        data += pack_net_addr ((1, (self.address, self.port)))
+        data += protocol.pack_net_addr ((1, (my_ip, self.port)))
+        data += protocol.pack_net_addr ((1, (self.address, self.port)))
         data += struct.pack ('<Q',NONCE)
-        data += pack_var_str (USER_AGENT)
+        data += protocol.pack_var_str (USER_AGENT)
         start_height = 0
         #ignore bip37 for now - leave True
         data += struct.pack ('<IB', start_height, 1)
@@ -284,11 +284,11 @@ class PeerSocket(object):
     # tx is expected to be a hex string, i.e. '02aba8...'
     def broadcast(self,tx):
         tx=tx.decode('hex')
-        tx_hash=dhash(tx) #need to hash here
+        tx_hash=protcol.dhash(tx) #need to hash here
         # we only broadcast if tx is new 
         if tx_hash not in self.broadcast_tx_dict:
             self.broadcast_tx_dict[tx_hash]=tx
-            data =  pack_var_int(1) 
+            data =  protocol.pack_var_int(1) 
             data += struct.pack('<I32s',1,tx_hash) #MSG_TX
             self._send_packet('inv',data)
             return True
@@ -298,40 +298,40 @@ class PeerSocket(object):
         return False
 
     def process_data(self,data):
-        if compare_command(data,"getaddr"): #get known peers
+        if protocol.compare_command(data,"getaddr"): #get known peers
             pass
-        elif compare_command(data,"addr"):#in reponse to getaddr
+        elif protocol.compare_command(data,"addr"):#in reponse to getaddr
             self._process_addr(data)
-        elif compare_command(data,"version"):
+        elif protocol.compare_command(data,"version"):
             pass
-        elif compare_command(data,"verack"):
+        elif protocol.compare_command(data,"verack"):
             pass
-        elif compare_command(data,"inv"): #advertise knowledge of tx or block
+        elif protocol.compare_command(data,"inv"): #advertise knowledge of tx or block
             self._process_inv(data)
-        elif compare_command(data,"getblocks"):#request an inv packet for blocks
+        elif protocol.compare_command(data,"getblocks"):#request an inv packet for blocks
             pass
-        elif compare_command(data,"getheaders"):#request headers
+        elif protocol.compare_command(data,"getheaders"):#request headers
             pass
-        elif compare_command(data,"headers"):#return header in reponse to getheader
+        elif protocol.compare_command(data,"headers"):#return header in reponse to getheader
             pass
-        elif compare_command(data,"getdata"):#get data from peer after broadcasting tx via inv
+        elif protocol.compare_command(data,"getdata"):#get data from peer after broadcasting tx via inv
             self._process_get_data(data)  
-        elif compare_command(data,"notfound"):#not found is sent after getdata recieved
+        elif protocol.compare_command(data,"notfound"):#not found is sent after getdata recieved
             pass
-        elif compare_command(data,"block"):#describe a block in reponse to getdata
+        elif protocol.compare_command(data,"block"):#describe a block in reponse to getdata
             pass
-        elif compare_command(data,"tx"):#describe a transaction in repones to getdata
+        elif protocol.compare_command(data,"tx"):#describe a transaction in repones to getdata
             pass
-        elif compare_command(data,"pong"):#response to ping
+        elif protocol.compare_command(data,"pong"):#response to ping
             pass
-        elif compare_command(data,"ping"):#query if tcp ip is alive
+        elif protocol.compare_command(data,"ping"):#query if tcp ip is alive
             pass
         else:
-            print("unhandled command recieved:",get_command_msgheader(data))
+            print("unhandled command recieved:",protocol.get_command_msgheader(data))
 
     def _process_get_data(self,data):
-        payload         =   get_payload(data)
-        varint_tuple    =   read_varint(payload)
+        payload         =   protocol.get_payload(data)
+        varint_tuple    =   protocol.read_var_int(payload)
         num_invs        =   varint_tuple[0]
         varint_size     =   varint_tuple[1]
         inv_data        =   payload[varint_size:]         
@@ -354,8 +354,8 @@ class PeerSocket(object):
                 print("unknown inv")
 
     def _process_addr(self,data):
-        payload         =   get_payload(data)
-        varint_tuple    =   read_varint(payload)
+        payload         =   protocol.get_payload(data)
+        varint_tuple    =   protocol.read_var_int(payload)
         num_ips         =   varint_tuple[0]
         varint_size     =   varint_tuple[1]
         ip_data         =   payload[varint_size:] 
@@ -371,8 +371,8 @@ class PeerSocket(object):
             self.peer_address_list.append(socket.inet_ntop(socket.AF_INET,ip_data[begin_index+24:begin_index+28])) 
 
     def _process_inv(self,data):
-        payload         =   get_payload(data)
-        varint_tuple    =   read_varint(payload)
+        payload         =   protocol.get_payload(data)
+        varint_tuple    =   protocol.read_var_int(payload)
         num_invs        =   varint_tuple[0]
         varint_size     =   varint_tuple[1]
         inv_data        =   payload[varint_size:]
@@ -391,109 +391,29 @@ class PeerSocket(object):
                 print("unknown inv")
 
     def _process_inv_tx(self,inv_hash):
-        self.tx_hash_list.append(inv_hash) 
+        self.tx_hash_list.append(inv_hash)
+
     def _process_inv_block(self,inv_hash):
         pass
 
+    def _process_pong(data):
+        if(protocol.compare_command(data,"pong")):
+            return True
+        else:
+            return False 
 
-def dhash (s):
-    return sha256(sha256(s).digest()).digest()
+    def _process_version_handshake(socket):
+        data=socket.recv(1024)
+        if(protocol.compare_command(data,"version")):
+            print("version message recieved")
+        else:
+            print("unexpected message recieved")
 
-def pack_ip_addr (addr):
-    # only v4 right now
-    # XXX this is probably no longer true, the dns seeds are returning v6 addrs
-    return socket.inet_pton (socket.AF_INET6, '::ffff:%s' % (addr,))
-
-def pack_var_int (n):
-    if n < 0xfd:
-        return chr(n)
-    elif n < 1<<16:
-        return '\xfd' + struct.pack ('<H', n)
-    elif n < 1<<32:
-        return '\xfe' + struct.pack ('<I', n)
-    else:
-        return '\xff' + struct.pack ('<Q', n)
-
-def pack_var_str (s):
-    return pack_var_int (len (s)) + s
-
-def pack_net_addr ((services, (addr, port))):
-    addr = pack_ip_addr (addr)
-    port = struct.pack ('!H', port)
-    return struct.pack ('<Q', services) + addr + port
-
-
-#return tuple with the integer and size of varint object
-def read_varint(data):
-    b1=struct.unpack('<B',data[0])
-    b1=b1[0]
-    if(b1<0xfd):
-        return (b1,1)
-    elif(b1==0xfd):
-        b2=struct.unpack('<H',data[1:3])
-        return(b2[0],3)
-    elif(b1==0xfe):
-        b3=struct.unpack('<I',data[1:5])
-        return(b3[0],5)
-    elif(b1==0xff): #b1==0xff
-        b4=struct.unpack('<Q',data[1:9])
-        return(b4[0],9)
-    else:
-        raise Exception("varint read failed") 
-
-def check_if_valid_command(data):
-    out = (compare_command(data,"getaddr") | compare_command(data,"addr") |
-        compare_command(data,"inv") | compare_command(data,"getblocks") |
-        compare_command(data,"headers") | compare_command(data,"getheaders") |
-        compare_command(data,"getdata") | compare_command(data,"notfound") |
-        compare_command(data,"block") | compare_command(data,"tx") |
-        compare_command(data,"pong") | compare_command(data,"ping") |
-        compare_command(data,"version") | compare_command(data,"verack"))
-        
-    return out
-
-def compare_command(data, string):  
-    tuple_start=get_command_msgheader(data)
-    for index,char in enumerate(string):
-        if( tuple_start[index]!=char):
-            return False        
-    return True
-
-
-#Function to process recieved messages #
-
-def get_magic_msgheader(data):
-    return struct.unpack('<I',data[0:4])[0]
-def get_command_msgheader(data):
-    return struct.unpack('12c',data[4:16])
-def get_length_msgheader(data):
-    if(len(data)<20):
-      raise Exception("data must be of length 20 at least, length is:%d"%len(data))
-    return struct.unpack('<I',data[16:20])[0]
-def get_checksum_msgheader(data):
-    return struct.unpack('<I',data[20:24])[0]
-def get_payload(data):
-    return data[24:] 
-
-#########################################
-def process_pong(data):
-    if(compare_command(data,"pong")):
-        return True
-    else:
-        return False 
-
-def process_version_handshake(socket):
-    data=socket.recv(1024)
-    if(compare_command(data,"version")):
-        print("version message recieved")
-    else:
-        print("unexpected message recieved")
-
-    data=socket.recv(1024)
-    out_tuple=struct.unpack('<I12c',data[0:16]) 
-    if(compare_command(data,"verack")):
-        print("verack message recieved")
-    else: 
-        print("message type:",out_tuple[1:])
+        data=socket.recv(1024)
+        out_tuple=struct.unpack('<I12c',data[0:16]) 
+        if(protocol.compare_command(data,"verack")):
+            print("verack message recieved")
+        else: 
+            print("message type:",out_tuple[1:])
 
 
