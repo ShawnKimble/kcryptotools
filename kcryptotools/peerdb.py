@@ -3,8 +3,8 @@ import time
 
 DEFAULT_DISK_DB_LOCATION='peerdatabase.db'
 
-# This contains information about connections to peer, when they were opened/initialized/closed
 
+# This contains information about connections to peer, when they were opened/initialized/closed
 class PeerMemDB(object):
     def __init__(self):
         # dict with address as key and a list containing tuple

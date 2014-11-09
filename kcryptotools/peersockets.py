@@ -409,7 +409,6 @@ class PeerSocket(object):
             print("version message recieved")
         else:
             print("unexpected message recieved")
-
         data=socket.recv(1024)
         out_tuple=struct.unpack('<I12c',data[0:16]) 
         if(protocol.compare_command(data,"verack")):
