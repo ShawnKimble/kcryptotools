@@ -13,7 +13,7 @@ def pushtx(crypto,num_peers_to_send,tx_list):
     if crypto not in cryptoconfig.SUPPORTED_CRYPTOS:
         raise Exception("Crypto {} not supported, suppored cryptos are {}".format(crypto,cryptoconfig.SUPPORTED_CRYPTOS))
  
-    handler=peersockets.PeerSocketsHandler(tx_list)
+    handler=peersockets.PeerSocketsHandler(crypto,tx_list)
     for address in cryptoconfig.DNS_SEEDS[crypto]:
         handler.create_peer_socket(address)
 

@@ -20,7 +20,7 @@ class PeerSocketsHandler(object):
     
     # tx_broadcast_list is a list of transactions to be broadcast 
     # in hex string (i.e, '03afb8..')
-    def __init__(self,tx_broadcast_list=[],crypto='bitcoin'):
+    def __init__(self,crypto,tx_broadcast_list=[]):
         self.crypto=crypto
 
         self.peer_memdb=peerdb.PeerMemDB()
@@ -49,6 +49,7 @@ class PeerSocketsHandler(object):
     #create new peer socket at address
     def create_peer_socket(self,address):
 
+        print("establishing connection to:",address)
         # check if address is domain name and convert it to TCP IP address
         if any([ c.isalpha() for c in address]):
             try:
@@ -59,7 +60,6 @@ class PeerSocketsHandler(object):
         try:
             peer=PeerSocket(self.crypto)
             peer.connect(address)
-            print("establishing connection to:",address)
         except IOError as e:
             print ("I/O error({0}): {1}".format(e.errno, e.strerror))
             print("could not connect to:",address)
@@ -99,6 +99,7 @@ class PeerSocketsHandler(object):
                 if not current_peer.get_is_active():
                     print("connection established to",current_peer.address)
                     current_peer.send_version(self.my_ip)
+                    current_peer.send_getaddr()
                     current_peer.set_is_active(True)
                     print("Sent version")
                     print("active peers:",self.get_num_active_peers())
@@ -258,7 +259,7 @@ class PeerSocket(object):
         self._send_packet ('version', data)
 
     # unused
-    def _send_getaddr(self):
+    def send_getaddr(self):
         data = struct.pack('0c')
         self._send_packet('getaddr',data)   
 
@@ -285,7 +286,7 @@ class PeerSocket(object):
     # tx is expected to be a hex string, i.e. '02aba8...'
     def broadcast(self,tx):
         tx=tx.decode('hex')
-        tx_hash=protcol.dhash(tx) #need to hash here
+        tx_hash=protocol.dhash(tx) #need to hash here
         # we only broadcast if tx is new 
         if tx_hash not in self.broadcast_tx_dict:
             self.broadcast_tx_dict[tx_hash]=tx
