@@ -78,10 +78,15 @@ class PeerSocketsHandler(object):
         self.peer_memdb.add_closed_address(address)
         del self.fileno_to_peer_dict[fileno]
    
-    def get_num_active_peers(self):
+    def get_num_peers(self):
         return len(self.fileno_to_peer_dict)
 
-
+    def get_num_active_peers(self):
+        out=0
+        for peer in self.fileno_to_peer_dict.values():
+            if peer.get_is_active():
+                out+=1
+        return out 
     # poll peer sockets and do stuff if there is data
     def run(self): 
         events=self.poller.poll()
