@@ -19,3 +19,6 @@ python pushtx.py <crypto> <number of peers to send tx to><transaction1 in hex> <
 
 This will connect to crypto nodes and broadcast the transactions in hex. Note that there is no check done on the transaction's validity, so this is useful for sending some transactions that would be labeled as invalid by bitcoind or blockchain.info's pushtx (i.e, tx's utilizing OP_RETURN).
 
+
+KNOWN ISSUES:
+
